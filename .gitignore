@@ -1,40 +1,6 @@
-# Python-generated files
+.venv/
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
- compute-orchestrator/
-│
-├── app/
-│   ├── __init__.py
-│   ├── main.py
-│   │
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── routes/
-│   │       ├── __init__.py
-│   │       └── health.py
-│   │
-│   ├── db/
-│   │   ├── __init__.py
-│   │   └── session.py
-│   │
-│   ├── models/        ← (empty now, used Day 2)
-│   │   └── __init__.py
-│   │
-│   ├── schemas/       ← (empty now, used Day 2)
-│   │   └── __init__.py
-│   │
-│   └── services/      ← (empty now, used Day 6)
-│       └── __init__.py
-│
-├── tests/             ← (used Day 7)
-│
-├── pyproject.toml
-├── uv.lock
-└── README.md
+*.pyc
+*.db
+uv.lock
+.env
