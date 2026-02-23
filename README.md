@@ -1,199 +1,161 @@
-# Compute Orchestrator
+Compute Orchestrator
 
-A backend-first architecture project built with **FastAPI + SQLAlchemy (2.0 style)** focused on transaction discipline, clean layering, and production-oriented backend engineering.
+A backend architecture project built with FastAPI + SQLAlchemy (2.0 style) focused on transaction discipline, clean layering, and production-oriented backend engineering.
 
-This project is designed as a foundational system for managing compute jobs — with future extensibility toward ML inference orchestration and distributed task execution.
+Compute Orchestrator is designed as a foundational system for managing compute jobs, with long-term extensibility toward ML inference orchestration and distributed execution systems.
 
----
+🚀 Purpose
 
-## 🚀 Project Overview
+This is not a basic CRUD demo.
 
-Compute Orchestrator is not a simple CRUD demo.  
-It is an architecture-focused backend system emphasizing:
+This project exists to strengthen core backend engineering fundamentals required for:
 
-- Clean separation of concerns
-- Proper transaction boundaries
-- ORM–database synchronization discipline
-- Structured service layer design
-- Production-ready backend thinking
+ML production systems
 
-The goal is to strengthen backend fundamentals required for building reliable ML production systems and compute-heavy services.
+Inference APIs
 
----
+Compute-heavy workloads
 
-## 🏗 Architecture
+Distributed task orchestration
 
-The system follows a strict layered architecture:
-# Compute Orchestrator
+The focus is architectural correctness, not feature volume.
 
-A backend-first architecture project built with **FastAPI + SQLAlchemy (2.0 style)** focused on transaction discipline, clean layering, and production-oriented backend engineering.
+🏗 Architecture
 
-This project is designed as a foundational system for managing compute jobs — with future extensibility toward ML inference orchestration and distributed task execution.
+The system follows a strict layered design:
 
----
-
-## 🚀 Project Overview
-
-Compute Orchestrator is not a simple CRUD demo.  
-It is an architecture-focused backend system emphasizing:
-
-- Clean separation of concerns
-- Proper transaction boundaries
-- ORM–database synchronization discipline
-- Structured service layer design
-- Production-ready backend thinking
-
-The goal is to strengthen backend fundamentals required for building reliable ML production systems and compute-heavy services.
-
----
-
-## 🏗 Architecture
-
-The system follows a strict layered architecture:
-# Compute Orchestrator
-
-A backend-first architecture project built with **FastAPI + SQLAlchemy (2.0 style)** focused on transaction discipline, clean layering, and production-oriented backend engineering.
-
-This project is designed as a foundational system for managing compute jobs — with future extensibility toward ML inference orchestration and distributed task execution.
-
----
-
-## 🚀 Project Overview
-
-Compute Orchestrator is not a simple CRUD demo.  
-It is an architecture-focused backend system emphasizing:
-
-- Clean separation of concerns
-- Proper transaction boundaries
-- ORM–database synchronization discipline
-- Structured service layer design
-- Production-ready backend thinking
-
-The goal is to strengthen backend fundamentals required for building reliable ML production systems and compute-heavy services.
-
----
-
-## 🏗 Architecture
-
-The system follows a strict layered architecture:
 Application (main.py)
-↓
+        ↓
 HTTP Layer (api/routes)
-↓
-Service Layer (business + transaction ownership)
-↓
+        ↓
+Service Layer (business logic + transaction ownership)
+        ↓
 ORM Layer (models)
-↓
+        ↓
 Database (SQLite)
+Design Rules
 
-### Key Design Principles
+Routes contain zero database logic
 
-- Routes contain no database logic.
-- Services own commit/rollback.
-- Each request receives a fresh database session.
-- ORM models require explicit primary keys.
-- Database schema must stay synchronized with application models.
+Services own commit / rollback
 
----
+Each request gets a fresh DB session
 
-## ⚙️ Technical Stack
+ORM models require explicit primary keys
 
-- **FastAPI** — HTTP framework
-- **SQLAlchemy 2.0 (typed ORM)** — Persistence layer
-- **SQLite** — Development database
-- **Pydantic** — Request/response validation
-- **Uvicorn** — ASGI server
+Database schema must stay synchronized with models
 
----
+No hidden side effects across layers
 
-## 🔎 Core Engineering Concepts Demonstrated
+This structure enforces separation of concerns and improves scalability and testability.
 
-### 1. Transaction Boundary Discipline
+⚙️ Technical Stack
 
-- `Session` represents a transactional workspace.
-- `add()` stages objects.
-- `commit()` executes SQL.
-- `rollback()` restores consistency on failure.
+FastAPI — HTTP framework
 
-Commit responsibility is isolated in the service layer.
+SQLAlchemy 2.0 (typed ORM) — Persistence layer
 
----
+SQLite — Development database
 
-### 2. Request-Scoped Session Management
+Pydantic — Request/response validation
+
+Uvicorn — ASGI server
+
+🔎 Engineering Concepts Demonstrated
+1️⃣ Transaction Boundary Discipline
+
+Session acts as a transactional workspace
+
+add() stages changes
+
+commit() executes SQL
+
+rollback() restores consistency on failure
+
+Commit ownership is intentionally isolated in the service layer.
+
+This prevents:
+
+Accidental partial writes
+
+Hidden transaction coupling
+
+Cross-layer state mutation
+
+2️⃣ Request-Scoped Session Management
 
 Each HTTP request:
-- Opens a fresh database session
-- Executes service logic
-- Closes session safely
 
-Prevents global session leakage and hidden state.
+Opens a fresh database session
 
----
+Executes service logic
 
-### 3. ORM–Schema Synchronization Awareness
+Closes the session safely
 
-During development, model changes required database recreation.
+This avoids:
 
-Key lesson reinforced:
+Global session leakage
 
-> Updating ORM models does not automatically migrate the database schema.
+Shared mutable state
 
-This highlights understanding of migration needs in production systems.
+Hard-to-debug concurrency issues
 
----
+3️⃣ ORM–Database Synchronization Awareness
 
-### 4. Clean Layered Design
+During development, schema mismatches required database recreation.
 
-- HTTP layer handles validation and routing.
-- Service layer handles business logic and transactions.
-- Models define persistence mapping.
-- Database utilities manage schema lifecycle.
+Key engineering takeaway:
 
-This separation supports scalability and testability.
+Updating ORM models does not automatically migrate the database.
 
----
+This reinforces awareness of migration discipline in real production systems.
 
-## 📌 Current Capabilities
+4️⃣ Clean Service Layer Design
 
-- Create compute jobs via `POST /jobs`
-- Persist jobs to database with timestamps
-- Automatic primary key generation
-- Proper error handling through transaction rollback
-- Interactive API documentation via Swagger
+HTTP layer → validation + routing
 
----
+Service layer → business logic + transaction control
 
-## 🎯 Future Direction
+ORM layer → persistence mapping
 
-Planned enhancements include:
+DB utilities → schema lifecycle management
 
-- Job state transitions (queued → running → succeeded/failed)
-- Read endpoints with pagination
-- Migration tooling (Alembic)
-- Async database engine support
-- Integration with task queues or distributed workers
-- ML inference orchestration capabilities
+This separation enables:
 
----
+Easier testing
 
-## 🧠 Why This Project Matters
+Predictable scaling
 
-Backend systems that support ML and compute workloads require:
+Clear responsibility boundaries
 
-- Strong transaction control
-- Clear separation of concerns
-- Data integrity discipline
-- Predictable execution flow
+📌 Current Capabilities
 
-This project serves as a foundation toward building robust production-grade ML backend systems.
+Create compute jobs via POST /jobs
 
----
+Persist jobs with automatic primary key generation
 
-## 👨‍💻 Author Intent
+Timestamp tracking
 
-This project reflects deliberate backend engineering practice:
+Transaction-safe writes
 
-- Writing code with architectural boundaries in mind
-- Debugging schema-level failures
-- Understanding ORM internals instead of treating it as magic
-- Building systems incrementally with production awareness
+Automatic rollback on failure
+
+Interactive Swagger documentation
+
+🧭 Future Enhancements
+
+Planned evolution toward production-grade compute orchestration:
+
+Job lifecycle state machine (queued → running → succeeded → failed)
+
+Read endpoints with filtering + pagination
+
+Alembic-based schema migrations
+
+Async SQLAlchemy engine
+
+Background worker integration
+
+Distributed task execution
+
+ML inference orchestration layer
