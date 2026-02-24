@@ -1,7 +1,7 @@
 from app.db.base import Base
 from app.db.session import engine
 
-# Ensure model is imported
+
 from app.models.job import Job  # noqa: F401
 
 

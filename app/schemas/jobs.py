@@ -1,4 +1,4 @@
-# app/schemas/job.py
+
 from pydantic import BaseModel
 
 class JobCreate(BaseModel):
