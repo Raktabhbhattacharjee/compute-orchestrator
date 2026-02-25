@@ -2,7 +2,7 @@ Compute Orchestrator
 
 A backend architecture project built with FastAPI + SQLAlchemy (2.0 style) focused on transaction discipline, clean layering, and production-oriented backend engineering.
 
-Compute Orchestrator is designed as a foundational system for managing compute jobs, with long-term extensibility toward ML inference orchestration and distributed execution systems.
+~Compute Orchestrator~ is designed as a foundational system for managing compute jobs, with long-term extensibility toward ML inference orchestration and distributed execution systems.
 
 🚀 Purpose
 

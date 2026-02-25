@@ -1,13 +1,29 @@
-
+from enum import Enum
 from pydantic import BaseModel
+from datetime import datetime
+
+
+class JobStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
 
 class JobCreate(BaseModel):
     name: str
 
+
 class JobRead(BaseModel):
     id: int
     name: str
-    status: str
+    status: JobStatus
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     class Config:
         from_attributes = True
+
+
+class JobStatusUpdate(BaseModel):
+    status: JobStatus
