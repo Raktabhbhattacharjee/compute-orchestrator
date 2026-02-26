@@ -1,161 +1,173 @@
 Compute Orchestrator
 
-A backend architecture project built with FastAPI + SQLAlchemy (2.0 style) focused on transaction discipline, clean layering, and production-oriented backend engineering.
+A backend-first job orchestration system built with FastAPI + SQLAlchemy 2.0.
 
-~Compute Orchestrator~ is designed as a foundational system for managing compute jobs, with long-term extensibility toward ML inference orchestration and distributed execution systems.
+This project is designed to simulate how distributed workers safely claim and process tasks without duplicating work.
 
-🚀 Purpose
+Overview
 
-This is not a basic CRUD demo.
+Compute Orchestrator manages the lifecycle of background jobs.
 
-This project exists to strengthen core backend engineering fundamentals required for:
+It ensures:
 
-ML production systems
+Jobs are created in a queued state
 
-Inference APIs
+Workers can safely claim one job at a time
 
-Compute-heavy workloads
+No two workers can process the same job
 
-Distributed task orchestration
+Job state persists across server restarts
 
-The focus is architectural correctness, not feature volume.
+This is not basic CRUD — it enforces controlled state transitions and atomic job claiming.
 
-🏗 Architecture
+Architecture
 
-The system follows a strict layered design:
+Layered structure:
 
-Application (main.py)
-        ↓
-HTTP Layer (api/routes)
-        ↓
-Service Layer (business logic + transaction ownership)
-        ↓
-ORM Layer (models)
-        ↓
-Database (SQLite)
-Design Rules
+main.py → routes → services → models → db
 
-Routes contain zero database logic
+Routes: HTTP layer (thin, no DB logic)
 
-Services own commit / rollback
+Services: Business logic + transaction control
 
-Each request gets a fresh DB session
+Models: SQLAlchemy ORM definitions
 
-ORM models require explicit primary keys
+DB layer: Engine + session management
 
-Database schema must stay synchronized with models
+Database: SQLite
+Session: Request-scoped via dependency injection
+Transactions: Controlled inside service layer
 
-No hidden side effects across layers
+Job Model
 
-This structure enforces separation of concerns and improves scalability and testability.
+Fields:
 
-⚙️ Technical Stack
+id – Primary key
 
-FastAPI — HTTP framework
+name – Job name
 
-SQLAlchemy 2.0 (typed ORM) — Persistence layer
+status – queued | running | succeeded | failed
 
-SQLite — Development database
+created_at
 
-Pydantic — Request/response validation
+updated_at
 
-Uvicorn — ASGI server
+locked_at – Timestamp when job was claimed
 
-🔎 Engineering Concepts Demonstrated
-1️⃣ Transaction Boundary Discipline
+State Machine
 
-Session acts as a transactional workspace
+Allowed transitions:
 
-add() stages changes
+queued → running
+running → succeeded | failed
+succeeded → terminal
+failed → terminal
 
-commit() executes SQL
+State transitions are validated in the service layer.
 
-rollback() restores consistency on failure
+Worker Claim Mechanism
 
-Commit ownership is intentionally isolated in the service layer.
+Endpoint:
 
-This prevents:
+POST /jobs/claim
 
-Accidental partial writes
+Behavior:
 
-Hidden transaction coupling
+Selects one job where status = queued
 
-Cross-layer state mutation
+Atomically updates:
 
-2️⃣ Request-Scoped Session Management
+status = running
 
-Each HTTP request:
+locked_at = current timestamp
 
-Opens a fresh database session
+Returns the job
 
-Executes service logic
+If no queued jobs exist → returns 204 No Content
 
-Closes the session safely
+This guarantees:
 
-This avoids:
+Only one worker can claim a job
 
-Global session leakage
+No duplicate processing
 
-Shared mutable state
+Safe concurrent access
 
-Hard-to-debug concurrency issues
+Atomic safety is enforced via conditional update:
 
-3️⃣ ORM–Database Synchronization Awareness
+UPDATE jobs
+SET status='running'
+WHERE id=? AND status='queued'
+Implemented Endpoints
 
-During development, schema mismatches required database recreation.
+Create job:
 
-Key engineering takeaway:
+POST /jobs
 
-Updating ORM models does not automatically migrate the database.
+List jobs:
 
-This reinforces awareness of migration discipline in real production systems.
+GET /jobs
 
-4️⃣ Clean Service Layer Design
+Get job by ID:
 
-HTTP layer → validation + routing
+GET /jobs/{id}
 
-Service layer → business logic + transaction control
+Update job status:
 
-ORM layer → persistence mapping
+PATCH /jobs/{id}/status
 
-DB utilities → schema lifecycle management
+Worker claim:
 
-This separation enables:
+POST /jobs/claim
+Demo Flow (Kitchen Analogy)
 
-Easier testing
+POST /jobs → Add order (queued)
 
-Predictable scaling
+GET /jobs → View board
 
-Clear responsibility boundaries
+POST /jobs/claim → Chef takes exactly one order
 
-📌 Current Capabilities
+GET /jobs → Order now running
 
-Create compute jobs via POST /jobs
+When no orders left → 204 No Content
 
-Persist jobs with automatic primary key generation
+Current Capabilities
 
-Timestamp tracking
+Clean layered architecture
 
-Transaction-safe writes
+Controlled state transitions
 
-Automatic rollback on failure
+Atomic job claiming
 
-Interactive Swagger documentation
+Durable job state (persists across restarts)
 
-🧭 Future Enhancements
+Concurrency-safe assignment primitive
 
-Planned evolution toward production-grade compute orchestration:
+Next Planned Features
 
-Job lifecycle state machine (queued → running → succeeded → failed)
+Worker heartbeat
 
-Read endpoints with filtering + pagination
+Stuck-job recovery (reaper)
 
-Alembic-based schema migrations
+Retry policy (attempt counters)
 
-Async SQLAlchemy engine
+Idempotent job creation
 
-Background worker integration
+Job payload + result storage
 
-Distributed task execution
+Why This Project
 
-ML inference orchestration layer
+This project focuses on:
+
+Backend architecture discipline
+
+Transaction management
+
+State machine enforcement
+
+Concurrency correctness
+
+Production-style thinking
+
+Designed as a foundation for future ML compute orchestration systems.
+

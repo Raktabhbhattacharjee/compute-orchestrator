@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -8,6 +8,7 @@ from app.services.jobs import (
     list_jobs,
     get_job,
     update_job_status,
+    claim_next_job,
     JobNotFound,
     InvalidTransition,
 )
@@ -15,7 +16,7 @@ from app.services.jobs import (
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
-@router.post("", response_model=JobRead, status_code=201)
+@router.post("", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 def post_job(payload: JobCreate, db: Session = Depends(get_db)):
     return create_job(db, name=payload.name)
 
@@ -29,7 +30,21 @@ def get_jobs(db: Session = Depends(get_db)):
 def get_job_by_id(job_id: int, db: Session = Depends(get_db)):
     job = get_job(db, job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return job
+
+
+@router.post(
+    "/claim",
+    responses={
+        200: {"model": JobRead},
+        204: {"description": "No queued jobs available"},
+    },
+)
+def claim_job(db: Session = Depends(get_db)):
+    job = claim_next_job(db)
+    if job is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     return job
 
 
@@ -40,6 +55,6 @@ def patch_job_status(
     try:
         return update_job_status(db, job_id=job_id, to_status=payload.status.value)
     except JobNotFound:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     except InvalidTransition as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
