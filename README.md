@@ -1,173 +1,121 @@
-Compute Orchestrator
+# Compute Orchestrator
 
-A backend-first job orchestration system built with FastAPI + SQLAlchemy 2.0.
+A backend job orchestration system built with FastAPI + SQLAlchemy 2.0.
 
-This project is designed to simulate how distributed workers safely claim and process tasks without duplicating work.
+I built this to deeply understand how distributed workers safely claim and process tasks — the kind of reliability concepts that power real job queues like Celery, Sidekiq, and AWS SQS.
 
-Overview
+---
 
-Compute Orchestrator manages the lifecycle of background jobs.
+## What This Is
 
-It ensures:
+A system that manages background jobs from creation to completion. Workers can claim jobs, process them, and report back — all without stepping on each other's toes.
 
-Jobs are created in a queued state
+This is not CRUD. The focus is on:
+- Controlled state transitions (not every status change is allowed)
+- Atomic job claiming (two workers cannot grab the same job)
+- Worker liveness tracking (we know who is working on what, and when they last checked in)
 
-Workers can safely claim one job at a time
+---
 
-No two workers can process the same job
+## Tech Stack
 
-Job state persists across server restarts
+- **FastAPI** — API framework
+- **SQLAlchemy 2.0** — ORM with modern async-style patterns
+- **SQLite** — lightweight persistent storage
+- **uv** — dependency and environment management
 
-This is not basic CRUD — it enforces controlled state transitions and atomic job claiming.
+---
 
-Architecture
+## Architecture
 
-Layered structure:
-
+```
 main.py → routes → services → models → db
+```
 
-Routes: HTTP layer (thin, no DB logic)
+I followed a strict layered architecture:
 
-Services: Business logic + transaction control
+- **Routes** — thin HTTP layer, no business logic
+- **Services** — owns all business logic, commits, and rollbacks
+- **Models** — SQLAlchemy ORM definitions
+- **DB layer** — engine + request-scoped session via dependency injection
 
-Models: SQLAlchemy ORM definitions
+Sessions are request-scoped. The service layer owns transactions. Domain exceptions map to HTTP responses.
 
-DB layer: Engine + session management
+---
 
-Database: SQLite
-Session: Request-scoped via dependency injection
-Transactions: Controlled inside service layer
+## Job Lifecycle
 
-Job Model
+Every job moves through a state machine:
 
-Fields:
+```
+queued → running → succeeded
+                 → failed
+```
 
-id – Primary key
+Invalid transitions are rejected at the service layer. You cannot skip states or go backwards.
 
-name – Job name
+---
 
-status – queued | running | succeeded | failed
+## Key Features
 
-created_at
+### Atomic Job Claiming — `POST /jobs/claim`
 
-updated_at
+The core concurrency challenge. When multiple workers call this at the same time, only one can claim a job. Implemented via a conditional update:
 
-locked_at – Timestamp when job was claimed
+```sql
+UPDATE jobs SET status = 'running', locked_at = now()
+WHERE id = ? AND status = 'queued'
+```
 
-State Machine
+If the row was already claimed by another worker between the SELECT and UPDATE, the update affects 0 rows and the claim fails safely. No locks, no race conditions.
 
-Allowed transitions:
+### Worker Identity — `locked_by`
 
-queued → running
-running → succeeded | failed
-succeeded → terminal
-failed → terminal
+Workers pass their identity when claiming a job. The system records who owns what. This is the foundation for stuck job detection — you can't find a ghost worker if you don't know who the worker was.
 
-State transitions are validated in the service layer.
+### Heartbeat — `POST /jobs/{id}/heartbeat`
 
-Worker Claim Mechanism
+While a job is running, the worker sends periodic heartbeats. Each one updates `last_heartbeat_at`. If heartbeats stop coming, the job can be flagged as stuck and recovered.
 
-Endpoint:
+---
 
-POST /jobs/claim
+## Endpoints
 
-Behavior:
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/jobs` | Create a new job |
+| `GET` | `/jobs` | List all jobs |
+| `GET` | `/jobs/{id}` | Get a job by ID |
+| `PATCH` | `/jobs/{id}/status` | Update job status (state machine enforced) |
+| `POST` | `/jobs/claim` | Atomically claim one queued job |
+| `POST` | `/jobs/{id}/heartbeat` | Worker check-in while job is running |
 
-Selects one job where status = queued
+---
 
-Atomically updates:
+## Running Locally
 
-status = running
+```bash
+uv run uvicorn app.main:app --reload
+```
 
-locked_at = current timestamp
+Docs available at `http://localhost:8000/docs`
 
-Returns the job
+---
 
-If no queued jobs exist → returns 204 No Content
+## What I Learned Building This
 
-This guarantees:
+- How state machines enforce correctness at the data layer
+- Why conditional updates are safer than SELECT + UPDATE patterns
+- How heartbeats solve the "worker died silently" problem in distributed systems
+- Clean layered architecture — keeping routes dumb and services smart
+- Request-scoped sessions and why transaction ownership matters
 
-Only one worker can claim a job
+---
 
-No duplicate processing
+## What's Next
 
-Safe concurrent access
-
-Atomic safety is enforced via conditional update:
-
-UPDATE jobs
-SET status='running'
-WHERE id=? AND status='queued'
-Implemented Endpoints
-
-Create job:
-
-POST /jobs
-
-List jobs:
-
-GET /jobs
-
-Get job by ID:
-
-GET /jobs/{id}
-
-Update job status:
-
-PATCH /jobs/{id}/status
-
-Worker claim:
-
-POST /jobs/claim
-Demo Flow (Kitchen Analogy)
-
-POST /jobs → Add order (queued)
-
-GET /jobs → View board
-
-POST /jobs/claim → Chef takes exactly one order
-
-GET /jobs → Order now running
-
-When no orders left → 204 No Content
-
-Current Capabilities
-
-Clean layered architecture
-
-Controlled state transitions
-
-Atomic job claiming
-
-Durable job state (persists across restarts)
-
-Concurrency-safe assignment primitive
-
-Next Planned Features
-
-Worker heartbeat
-
-Stuck-job recovery (reaper)
-
-Retry policy (attempt counters)
-
-Idempotent job creation
-
-Job payload + result storage
-
-Why This Project
-
-This project focuses on:
-
-Backend architecture discipline
-
-Transaction management
-
-State machine enforcement
-
-Concurrency correctness
-
-Production-style thinking
-
-Designed as a foundation for future ML compute orchestration systems.
-
+- **Stuck job reaper** — detect jobs where heartbeats have stopped, requeue them automatically
+- **Retry mechanism** — track `retry_count`, move to `exhausted` after max retries
+- **Priority queue** — claim highest priority job first, not just oldest
+- **Background sweeper** — run the reaper automatically via FastAPI lifespan events
+- **Job result storage** — workers submit output payload on completion
