@@ -9,8 +9,10 @@ from app.services.jobs import (
     get_job,
     update_job_status,
     claim_next_job,
+    heartbeat_job,        
     JobNotFound,
     InvalidTransition,
+    InvalidHeartbeat,     
 )
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -46,6 +48,16 @@ def claim_job(db: Session = Depends(get_db)):
     if job is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return job
+
+
+@router.post("/{job_id}/heartbeat", response_model=JobRead)
+def post_job_heartbeat(job_id: int, db: Session = Depends(get_db)):
+    try:
+        return heartbeat_job(db, job_id=job_id)
+    except JobNotFound:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    except InvalidHeartbeat as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
 @router.patch("/{job_id}/status", response_model=JobRead)

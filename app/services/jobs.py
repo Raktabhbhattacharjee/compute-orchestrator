@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+
 from sqlalchemy import select, update
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
 from app.models.job import Job
 
 
@@ -10,6 +12,10 @@ class JobNotFound(Exception):
 
 
 class InvalidTransition(Exception):
+    pass
+
+
+class InvalidHeartbeat(Exception):
     pass
 
 
@@ -91,3 +97,24 @@ def claim_next_job(db: Session) -> Job | None:
         db.rollback()
 
     return None
+
+
+def heartbeat_job(db: Session, *, job_id: int) -> Job:
+    job = db.get(Job, job_id)
+    if job is None:
+        raise JobNotFound()
+
+    if job.status != "running":
+        raise InvalidHeartbeat(
+            f"Heartbeat allowed only when running. Current={job.status}"
+        )
+
+    job.last_heartbeat_at = datetime.now(timezone.utc)
+
+    try:
+        db.commit()
+        db.refresh(job)
+        return job
+    except SQLAlchemyError:
+        db.rollback()
+        raise

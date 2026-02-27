@@ -20,6 +20,8 @@ class JobRead(BaseModel):
     status: JobStatus
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    locked_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
 
     class Config:
         from_attributes = True
