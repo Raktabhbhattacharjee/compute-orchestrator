@@ -22,6 +22,7 @@ class JobRead(BaseModel):
     updated_at: datetime | None = None
     locked_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
+    locked_by: str | None = None
 
     class Config:
         from_attributes = True

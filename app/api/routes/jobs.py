@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Header
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -9,10 +9,10 @@ from app.services.jobs import (
     get_job,
     update_job_status,
     claim_next_job,
-    heartbeat_job,        
+    heartbeat_job,
     JobNotFound,
     InvalidTransition,
-    InvalidHeartbeat,     
+    InvalidHeartbeat,
 )
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -43,17 +43,24 @@ def get_job_by_id(job_id: int, db: Session = Depends(get_db)):
         204: {"description": "No queued jobs available"},
     },
 )
-def claim_job(db: Session = Depends(get_db)):
-    job = claim_next_job(db)
+def claim_job(
+    db: Session = Depends(get_db),
+    worker_id: str = Header(..., alias="X-Worker-Id"),
+):
+    job = claim_next_job(db, worker_id=worker_id)
     if job is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return job
 
 
 @router.post("/{job_id}/heartbeat", response_model=JobRead)
-def post_job_heartbeat(job_id: int, db: Session = Depends(get_db)):
+def post_job_heartbeat(
+    job_id: int,
+    db: Session = Depends(get_db),
+    worker_id: str = Header(..., alias="X-Worker-Id"),
+):
     try:
-        return heartbeat_job(db, job_id=job_id)
+        return heartbeat_job(db, job_id=job_id, worker_id=worker_id)
     except JobNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     except InvalidHeartbeat as e:
@@ -62,10 +69,18 @@ def post_job_heartbeat(job_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{job_id}/status", response_model=JobRead)
 def patch_job_status(
-    job_id: int, payload: JobStatusUpdate, db: Session = Depends(get_db)
+    job_id: int,
+    payload: JobStatusUpdate,
+    db: Session = Depends(get_db),
+    worker_id: str = Header(..., alias="X-Worker-Id"),
 ):
     try:
-        return update_job_status(db, job_id=job_id, to_status=payload.status.value)
+        return update_job_status(
+            db,
+            job_id=job_id,
+            to_status=payload.status.value,
+            worker_id=worker_id,
+        )
     except JobNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     except InvalidTransition as e:

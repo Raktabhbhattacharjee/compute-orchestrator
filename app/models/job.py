@@ -11,6 +11,7 @@ class Job(Base):
 
     name: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, default="queued", nullable=False)
+    locked_by:Mapped[str|None]= mapped_column(String(128),nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

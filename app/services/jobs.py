@@ -47,7 +47,7 @@ def get_job(db: Session, job_id: int) -> Job | None:
     return db.get(Job, job_id)
 
 
-def update_job_status(db: Session, *, job_id: int, to_status: str) -> Job:
+def update_job_status(db: Session, *, job_id: int, to_status: str, worker_id: str) -> Job:
     job = db.get(Job, job_id)
     if job is None:
         raise JobNotFound()
@@ -56,7 +56,20 @@ def update_job_status(db: Session, *, job_id: int, to_status: str) -> Job:
     if to_status not in allowed:
         raise InvalidTransition(f"{job.status} -> {to_status} not allowed")
 
+    # Stronger semantics: only /jobs/claim should start work
+    if job.status == "queued" and to_status == "running":
+        raise InvalidTransition("Use POST /jobs/claim to move queued -> running")
+
+    # Ownership rule: only lock owner can complete running jobs
+    if job.status == "running" and to_status in {"succeeded", "failed"}:
+        if job.locked_by is None:
+            raise InvalidTransition("Job has no locked_by owner; cannot complete safely")
+        if job.locked_by != worker_id:
+            raise InvalidTransition("Job locked by another worker")
+
     job.status = to_status
+    job.updated_at = datetime.now(timezone.utc)
+
     try:
         db.commit()
         db.refresh(job)
@@ -66,7 +79,7 @@ def update_job_status(db: Session, *, job_id: int, to_status: str) -> Job:
         raise
 
 
-def claim_next_job(db: Session) -> Job | None:
+def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
     # Retry a few times in case two workers race
     for _ in range(3):
         job = db.execute(
@@ -81,7 +94,12 @@ def claim_next_job(db: Session) -> Job | None:
         result = db.execute(
             update(Job)
             .where(Job.id == job.id, Job.status == "queued")
-            .values(status="running", locked_at=now)
+            .values(
+                status="running",
+                locked_at=now,
+                locked_by=worker_id,  
+                updated_at=now,      
+            )
         )
 
         if result.rowcount == 1:
@@ -99,7 +117,7 @@ def claim_next_job(db: Session) -> Job | None:
     return None
 
 
-def heartbeat_job(db: Session, *, job_id: int) -> Job:
+def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
     job = db.get(Job, job_id)
     if job is None:
         raise JobNotFound()
@@ -109,7 +127,15 @@ def heartbeat_job(db: Session, *, job_id: int) -> Job:
             f"Heartbeat allowed only when running. Current={job.status}"
         )
 
-    job.last_heartbeat_at = datetime.now(timezone.utc)
+    if job.locked_by is None:
+        raise InvalidHeartbeat("Job has no locked_by owner; cannot heartbeat safely")
+
+    if job.locked_by != worker_id:
+        raise InvalidHeartbeat("Job locked by another worker")
+
+    now = datetime.now(timezone.utc)
+    job.last_heartbeat_at = now
+    job.updated_at = now
 
     try:
         db.commit()
