@@ -10,6 +10,7 @@ from app.services.jobs import (
     update_job_status,
     claim_next_job,
     heartbeat_job,
+    reap_stuck_jobs,
     JobNotFound,
     InvalidTransition,
     InvalidHeartbeat,
@@ -32,7 +33,9 @@ def get_jobs(db: Session = Depends(get_db)):
 def get_job_by_id(job_id: int, db: Session = Depends(get_db)):
     job = get_job(db, job_id)
     if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        )
     return job
 
 
@@ -53,6 +56,12 @@ def claim_job(
     return job
 
 
+@router.post("/reap", status_code=status.HTTP_200_OK)
+def reap_jobs(db: Session = Depends(get_db)):
+    recovered = reap_stuck_jobs(db)
+    return {"recovered": recovered}
+
+
 @router.post("/{job_id}/heartbeat", response_model=JobRead)
 def post_job_heartbeat(
     job_id: int,
@@ -62,7 +71,9 @@ def post_job_heartbeat(
     try:
         return heartbeat_job(db, job_id=job_id, worker_id=worker_id)
     except JobNotFound:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        )
     except InvalidHeartbeat as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
@@ -82,6 +93,8 @@ def patch_job_status(
             worker_id=worker_id,
         )
     except JobNotFound:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        )
     except InvalidTransition as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

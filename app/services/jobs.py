@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime,timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -47,7 +47,9 @@ def get_job(db: Session, job_id: int) -> Job | None:
     return db.get(Job, job_id)
 
 
-def update_job_status(db: Session, *, job_id: int, to_status: str, worker_id: str) -> Job:
+def update_job_status(
+    db: Session, *, job_id: int, to_status: str, worker_id: str
+) -> Job:
     job = db.get(Job, job_id)
     if job is None:
         raise JobNotFound()
@@ -63,7 +65,9 @@ def update_job_status(db: Session, *, job_id: int, to_status: str, worker_id: st
     # Ownership rule: only lock owner can complete running jobs
     if job.status == "running" and to_status in {"succeeded", "failed"}:
         if job.locked_by is None:
-            raise InvalidTransition("Job has no locked_by owner; cannot complete safely")
+            raise InvalidTransition(
+                "Job has no locked_by owner; cannot complete safely"
+            )
         if job.locked_by != worker_id:
             raise InvalidTransition("Job locked by another worker")
 
@@ -97,8 +101,8 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
             .values(
                 status="running",
                 locked_at=now,
-                locked_by=worker_id,  
-                updated_at=now,      
+                locked_by=worker_id,
+                updated_at=now,
             )
         )
 
@@ -141,6 +145,39 @@ def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
         db.commit()
         db.refresh(job)
         return job
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
+def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=threshold_seconds)
+
+    stuck_jobs = (
+        db.execute(
+            select(Job).where(
+                Job.status == "running",
+                (Job.last_heartbeat_at < cutoff) | (Job.last_heartbeat_at == None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if not stuck_jobs:
+        return 0
+
+    for job in stuck_jobs:
+        job.status = "queued"
+        job.locked_by = None
+        job.locked_at = None
+        job.last_heartbeat_at = None
+        job.updated_at = now
+
+    try:
+        db.commit()
+        return len(stuck_jobs)
     except SQLAlchemyError:
         db.rollback()
         raise
