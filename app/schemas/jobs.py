@@ -8,6 +8,8 @@ class JobStatus(str, Enum):
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
+    exhausted="exhausted"
+    
 
 
 class JobCreate(BaseModel):
@@ -23,6 +25,8 @@ class JobRead(BaseModel):
     locked_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
     locked_by: str | None = None
+    retry_count:int = 0 
+    max_retries:int = 0 
 
     class Config:
         from_attributes = True

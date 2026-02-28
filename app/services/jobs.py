@@ -1,4 +1,4 @@
-from datetime import datetime,timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,6 +24,7 @@ ALLOWED_TRANSITIONS = {
     "running": {"succeeded", "failed"},
     "succeeded": set(),
     "failed": set(),
+    "exhausted": set(),
 }
 
 
@@ -174,6 +175,12 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         job.locked_at = None
         job.last_heartbeat_at = None
         job.updated_at = now
+
+        if job.retry_count >= job.max_retries:
+            job.status = "exhausted"
+        else:
+            job.status = "queued"
+            job.retry_count += 1
 
     try:
         db.commit()
