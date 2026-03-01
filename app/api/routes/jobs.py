@@ -11,6 +11,7 @@ from app.services.jobs import (
     claim_next_job,
     heartbeat_job,
     reap_stuck_jobs,
+    get_metrics,
     JobNotFound,
     InvalidTransition,
     InvalidHeartbeat,
@@ -21,12 +22,17 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 @router.post("", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 def post_job(payload: JobCreate, db: Session = Depends(get_db)):
-    return create_job(db, name=payload.name,priority=payload.priority)
+    return create_job(db, name=payload.name, priority=payload.priority)
 
 
 @router.get("", response_model=list[JobRead])
 def get_jobs(db: Session = Depends(get_db)):
     return list_jobs(db)
+
+
+@router.get("/metrics")
+def get_job_metrics(db: Session = Depends(get_db)):
+    return get_metrics(db)
 
 
 @router.get("/{job_id}", response_model=JobRead)

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-
+from sqlalchemy import func
 from app.models.job import Job
 
 
@@ -190,3 +190,40 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
     except SQLAlchemyError:
         db.rollback()
         raise
+
+
+# metrics function
+def get_metrics(db: Session) -> dict:
+
+    # Count jobs grouped by status
+    status_counts = db.execute(
+        select(Job.status, func.count(Job.id).label("count")).group_by(Job.status)
+    ).all()
+
+    # Build counts dict with all statuses defaulting to 0
+    counts = {
+        "queued": 0,
+        "running": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "exhausted": 0,
+    }
+    for row in status_counts:
+        counts[row.status] = row.count
+
+    # Average processing time for succeeded jobs
+    avg_result = db.execute(
+        select(
+            func.avg(func.julianday(Job.updated_at) - func.julianday(Job.locked_at))
+            * 86400
+        ).where(
+            Job.status == "succeeded",
+            Job.locked_at != None,
+        )
+    ).scalar()
+
+    return {
+        **counts,
+        "total": sum(counts.values()),
+        "avg_processing_time_seconds": round(avg_result, 2) if avg_result else 0,
+    }
