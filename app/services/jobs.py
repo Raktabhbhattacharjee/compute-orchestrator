@@ -28,8 +28,8 @@ ALLOWED_TRANSITIONS = {
 }
 
 
-def create_job(db: Session, *, name: str) -> Job:
-    job = Job(name=name, status="queued")
+def create_job(db: Session, *, name: str, priority: int = 1) -> Job:
+    job = Job(name=name, status="queued", priority=priority)
     db.add(job)
     try:
         db.commit()
@@ -88,7 +88,10 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
     # Retry a few times in case two workers race
     for _ in range(3):
         job = db.execute(
-            select(Job).where(Job.status == "queued").order_by(Job.id.desc()).limit(1)
+            select(Job)
+            .where(Job.status == "queued")
+            .order_by(Job.priority.desc(), Job.created_at.asc())
+            .limit(1)
         ).scalar_one_or_none()
 
         if job is None:
@@ -170,7 +173,6 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         return 0
 
     for job in stuck_jobs:
-        job.status = "queued"
         job.locked_by = None
         job.locked_at = None
         job.last_heartbeat_at = None

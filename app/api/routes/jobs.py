@@ -21,7 +21,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 @router.post("", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 def post_job(payload: JobCreate, db: Session = Depends(get_db)):
-    return create_job(db, name=payload.name)
+    return create_job(db, name=payload.name,priority=payload.priority)
 
 
 @router.get("", response_model=list[JobRead])
