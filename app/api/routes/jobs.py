@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status, Header
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.jobs import JobCreate, JobRead, JobStatusUpdate
+from app.schemas.jobs import JobCreate, JobRead, JobStatusUpdate, JobEventRead
 from app.services.jobs import (
     create_job,
     list_jobs,
@@ -12,6 +12,7 @@ from app.services.jobs import (
     heartbeat_job,
     reap_stuck_jobs,
     get_metrics,
+    get_job_history,
     JobNotFound,
     InvalidTransition,
     InvalidHeartbeat,
@@ -33,6 +34,16 @@ def get_jobs(db: Session = Depends(get_db)):
 @router.get("/metrics")
 def get_job_metrics(db: Session = Depends(get_db)):
     return get_metrics(db)
+
+
+@router.get("/{job_id}/history", response_model=list[JobEventRead])
+def get_job_history_route(job_id: int, db: Session = Depends(get_db)):
+    job = get_job(db, job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        )
+    return get_job_history(db, job_id=job_id)
 
 
 @router.get("/{job_id}", response_model=JobRead)

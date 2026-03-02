@@ -35,3 +35,15 @@ class JobRead(BaseModel):
 
 class JobStatusUpdate(BaseModel):
     status: JobStatus
+
+
+class JobEventRead(BaseModel):
+    id: int
+    job_id: int
+    from_status: str | None = None
+    to_status: str
+    actor: str | None = None
+    created_at: datetime | None = None
+
+    class Config:
+        from_attributes = True

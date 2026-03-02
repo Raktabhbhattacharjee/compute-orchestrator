@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from app.models.job import Job
+
+from app.models.job import Job, JobEvent
 
 
 class JobNotFound(Exception):
@@ -28,12 +28,33 @@ ALLOWED_TRANSITIONS = {
 }
 
 
+def record_event(
+    db: Session,
+    *,
+    job_id: int,
+    from_status: str | None,
+    to_status: str,
+    actor: str | None = None,
+) -> None:
+    event = JobEvent(
+        job_id=job_id,
+        from_status=from_status,
+        to_status=to_status,
+        actor=actor,
+    )
+    db.add(event)
+
+
 def create_job(db: Session, *, name: str, priority: int = 1) -> Job:
     job = Job(name=name, status="queued", priority=priority)
     db.add(job)
     try:
         db.commit()
         db.refresh(job)
+        record_event(
+            db, job_id=job.id, from_status=None, to_status="queued", actor="system"
+        )
+        db.commit()
         return job
     except SQLAlchemyError:
         db.rollback()
@@ -59,11 +80,9 @@ def update_job_status(
     if to_status not in allowed:
         raise InvalidTransition(f"{job.status} -> {to_status} not allowed")
 
-    # Stronger semantics: only /jobs/claim should start work
     if job.status == "queued" and to_status == "running":
         raise InvalidTransition("Use POST /jobs/claim to move queued -> running")
 
-    # Ownership rule: only lock owner can complete running jobs
     if job.status == "running" and to_status in {"succeeded", "failed"}:
         if job.locked_by is None:
             raise InvalidTransition(
@@ -72,8 +91,12 @@ def update_job_status(
         if job.locked_by != worker_id:
             raise InvalidTransition("Job locked by another worker")
 
+    old_status = job.status
     job.status = to_status
     job.updated_at = datetime.now(timezone.utc)
+    record_event(
+        db, job_id=job.id, from_status=old_status, to_status=to_status, actor=worker_id
+    )
 
     try:
         db.commit()
@@ -85,7 +108,6 @@ def update_job_status(
 
 
 def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
-    # Retry a few times in case two workers race
     for _ in range(3):
         job = db.execute(
             select(Job)
@@ -112,6 +134,13 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
 
         if result.rowcount == 1:
             try:
+                record_event(
+                    db,
+                    job_id=job.id,
+                    from_status="queued",
+                    to_status="running",
+                    actor=worker_id,
+                )
                 db.commit()
                 db.refresh(job)
                 return job
@@ -119,7 +148,6 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
                 db.rollback()
                 raise
 
-        # If another worker claimed it first, retry
         db.rollback()
 
     return None
@@ -173,6 +201,7 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         return 0
 
     for job in stuck_jobs:
+        old_status = job.status
         job.locked_by = None
         job.locked_at = None
         job.last_heartbeat_at = None
@@ -184,6 +213,14 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
             job.status = "queued"
             job.retry_count += 1
 
+        record_event(
+            db,
+            job_id=job.id,
+            from_status=old_status,
+            to_status=job.status,
+            actor="reaper",
+        )
+
     try:
         db.commit()
         return len(stuck_jobs)
@@ -192,15 +229,11 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         raise
 
 
-# metrics function
 def get_metrics(db: Session) -> dict:
-
-    # Count jobs grouped by status
     status_counts = db.execute(
         select(Job.status, func.count(Job.id).label("count")).group_by(Job.status)
     ).all()
 
-    # Build counts dict with all statuses defaulting to 0
     counts = {
         "queued": 0,
         "running": 0,
@@ -211,7 +244,6 @@ def get_metrics(db: Session) -> dict:
     for row in status_counts:
         counts[row.status] = row.count
 
-    # Average processing time for succeeded jobs
     avg_result = db.execute(
         select(
             func.avg(func.julianday(Job.updated_at) - func.julianday(Job.locked_at))
@@ -227,3 +259,15 @@ def get_metrics(db: Session) -> dict:
         "total": sum(counts.values()),
         "avg_processing_time_seconds": round(avg_result, 2) if avg_result else 0,
     }
+
+
+def get_job_history(db: Session, *, job_id: int) -> list[JobEvent]:
+    return (
+        db.execute(
+            select(JobEvent)
+            .where(JobEvent.job_id == job_id)
+            .order_by(JobEvent.created_at.asc())
+        )
+        .scalars()
+        .all()
+    )
