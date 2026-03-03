@@ -27,8 +27,14 @@ def post_job(payload: JobCreate, db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=list[JobRead])
-def get_jobs(db: Session = Depends(get_db)):
-    return list_jobs(db)
+def get_jobs(
+    db: Session = Depends(get_db),
+    status: str | None = None,
+    locked_by: str | None = None,
+    page: int = 1,
+    limit: int = 10,
+):
+    return list_jobs(db, status=status, locked_by=locked_by, page=page, limit=limit)
 
 
 @router.get("/metrics")

@@ -61,8 +61,26 @@ def create_job(db: Session, *, name: str, priority: int = 1) -> Job:
         raise
 
 
-def list_jobs(db: Session) -> list[Job]:
-    return db.query(Job).order_by(Job.id.desc()).all()
+def list_jobs(
+    db: Session,
+    *,
+    status: str | None = None,
+    locked_by: str | None = None,
+    page: int = 1,
+    limit: int = 10,
+) -> list[Job]:
+    query = select(Job)
+
+    if status:
+        query = query.where(Job.status == status)
+
+    if locked_by:
+        query = query.where(Job.locked_by == locked_by)
+
+    offset = (page - 1) * limit
+    query = query.order_by(Job.id.desc()).limit(limit).offset(offset)
+
+    return db.execute(query).scalars().all()
 
 
 def get_job(db: Session, job_id: int) -> Job | None:
