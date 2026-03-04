@@ -125,50 +125,41 @@ def update_job_status(
         raise
 
 
+#  claim next job
 def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
-    for _ in range(3):
-        job = db.execute(
-            select(Job)
-            .where(Job.status == "queued")
-            .order_by(Job.priority.desc(), Job.created_at.asc())
-            .limit(1)
-        ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
 
-        if job is None:
-            return None
+    job = db.execute(
+        select(Job)
+        .where(Job.status == "queued")
+        .order_by(Job.priority.desc(), Job.created_at.asc())
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    ).scalar_one_or_none()
 
-        now = datetime.now(timezone.utc)
+    if job is None:
+        return None
 
-        result = db.execute(
-            update(Job)
-            .where(Job.id == job.id, Job.status == "queued")
-            .values(
-                status="running",
-                locked_at=now,
-                locked_by=worker_id,
-                updated_at=now,
-            )
-        )
+    job.status = "running"
+    job.locked_by = worker_id
+    job.locked_at = now
+    job.updated_at = now
 
-        if result.rowcount == 1:
-            try:
-                record_event(
-                    db,
-                    job_id=job.id,
-                    from_status="queued",
-                    to_status="running",
-                    actor=worker_id,
-                )
-                db.commit()
-                db.refresh(job)
-                return job
-            except SQLAlchemyError:
-                db.rollback()
-                raise
+    record_event(
+        db,
+        job_id=job.id,
+        from_status="queued",
+        to_status="running",
+        actor=worker_id,
+    )
 
+    try:
+        db.commit()
+        db.refresh(job)
+        return job
+    except SQLAlchemyError:
         db.rollback()
-
-    return None
+        raise
 
 
 def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
@@ -247,6 +238,7 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         raise
 
 
+# GET METRICS FUNCTION 
 def get_metrics(db: Session) -> dict:
     status_counts = db.execute(
         select(Job.status, func.count(Job.id).label("count")).group_by(Job.status)
@@ -264,8 +256,10 @@ def get_metrics(db: Session) -> dict:
 
     avg_result = db.execute(
         select(
-            func.avg(func.julianday(Job.updated_at) - func.julianday(Job.locked_at))
-            * 86400
+            func.avg(
+                func.extract("epoch", Job.updated_at)
+                - func.extract("epoch", Job.locked_at)
+            )
         ).where(
             Job.status == "succeeded",
             Job.locked_at != None,
