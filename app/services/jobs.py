@@ -144,7 +144,7 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
     job.locked_by = worker_id
     job.locked_at = now
     job.updated_at = now
-
+    job.lease_expires_at=now+timedelta(seconds=30)
     record_event(
         db,
         job_id=job.id,
@@ -161,7 +161,7 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
         db.rollback()
         raise
 
-
+# heartbeat job function 
 def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
     job = db.get(Job, job_id)
     if job is None:
@@ -181,6 +181,7 @@ def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
     now = datetime.now(timezone.utc)
     job.last_heartbeat_at = now
     job.updated_at = now
+    job.lease_expires_at=now+timedelta(seconds=60)
 
     try:
         db.commit()
@@ -190,16 +191,16 @@ def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
         db.rollback()
         raise
 
-
+# reap stuck jobs 
 def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(seconds=threshold_seconds)
+    
 
     stuck_jobs = (
         db.execute(
             select(Job).where(
                 Job.status == "running",
-                (Job.last_heartbeat_at < cutoff) | (Job.last_heartbeat_at == None),
+                (Job.lease_expires_at < now) | (Job.lease_expires_at == None),
             )
         )
         .scalars()
@@ -214,6 +215,7 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         job.locked_by = None
         job.locked_at = None
         job.last_heartbeat_at = None
+        job.lease_expires_at=None
         job.updated_at = now
 
         if job.retry_count >= job.max_retries:

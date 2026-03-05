@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import DateTime, String, func, Integer,ForeignKey
+from sqlalchemy import DateTime, String, func, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -15,7 +15,7 @@ class Job(Base):
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_retries: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -32,7 +32,12 @@ class Job(Base):
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-# jobevvent table 
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+# jobevvent table
 class JobEvent(Base):
     __tablename__ = "job_events"
 
