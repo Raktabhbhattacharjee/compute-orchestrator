@@ -1,9 +1,9 @@
 from datetime import datetime
-from sqlalchemy import DateTime, String, func, Integer, ForeignKey
+from sqlalchemy import DateTime, String, func, Integer, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
-
+#  added indexes here 
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -36,8 +36,12 @@ class Job(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    __table_args__ = (
+        Index("idx_jobs_claim", "status", "priority", "created_at"),
+        Index("idx_jobs_reaper", "status", "lease_expires_at"),
+    )
 
-# jobevvent table
+
 class JobEvent(Base):
     __tablename__ = "job_events"
 
@@ -48,4 +52,8 @@ class JobEvent(Base):
     actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_job_events_job_id", "job_id", "created_at"),
     )
