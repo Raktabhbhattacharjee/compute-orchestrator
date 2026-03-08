@@ -1,202 +1,264 @@
 # Compute Orchestrator
 
-A backend job orchestration system built with FastAPI + SQLAlchemy 2.0.
+A distributed job queue built from scratch with FastAPI and PostgreSQL. Live on Railway.
 
-I built this to deeply understand how distributed workers safely claim and process tasks — the kind of reliability concepts that power real job queues like Celery, Sidekiq, and AWS SQS.
+I built this to understand how production job queues actually work under the hood — the same ideas behind Celery, Sidekiq, and SQS. Not rushing to ship features. Going deep on every concept before moving on.
 
-This is a long term project. I'm not rushing to ship features — I'm going deep on every concept before moving on.
-
----
-
-## What This Is
-
-A system that manages background jobs from creation to completion. Workers claim jobs, process them, check in while working, and report back — all without stepping on each other's toes.
-
-This is not CRUD. The focus is on:
-
-- Controlled state transitions — not every status change is allowed
-- Atomic job claiming — two workers cannot grab the same job, ever
-- Worker liveness tracking — we know who is working on what, and when they last checked in
-- Self healing recovery — stuck jobs get detected and requeued automatically
-- Intelligent failure handling — jobs retry up to a limit, then give up gracefully
-- Observability — the system tells you what it's doing at all times
+**Live:** https://compute-orchestrator-production.up.railway.app/docs  
+**Health:** https://compute-orchestrator-production.up.railway.app/health
 
 ---
 
-## Tech Stack
+## What it does
 
-- **FastAPI** — API framework
-- **SQLAlchemy 2.0** — ORM with modern style patterns
-- **SQLite** — lightweight persistent storage (PostgreSQL migration planned)
-- **uv** — dependency and environment management
-- **httpx** — HTTP client for test scripts
+Workers claim jobs, process them, send heartbeats while working, and report back when done. The system tracks all of it — who owns what, whether they're still alive, and what to do when they're not.
+
+The hard problems here:
+
+- two workers cannot claim the same job, ever
+- valid state transitions only — you can't skip states or go backwards
+- workers that go silent get detected and their jobs get recovered
+- retry logic with a ceiling — failed jobs retry, but stop eventually
+- every state change is recorded permanently
 
 ---
 
-## Architecture
+## Stack
+
+| Tool | Why |
+|------|-----|
+| FastAPI | API layer |
+| SQLAlchemy 2.0 | ORM |
+| PostgreSQL | Row-level locking for real concurrency |
+| Alembic | Migrations |
+| Docker + docker-compose | Local dev |
+| Railway | Deployment + managed Postgres |
+| uv | Dependency management |
+
+---
+
+## Project structure
 
 ```
-main.py → routes → services → models → db
+compute-orchestrator/
+├── app/
+│   ├── main.py
+│   ├── api/
+│   │   └── routes/
+│   │       ├── jobs.py
+│   │       └── health.py
+│   ├── db/
+│   │   └── session.py
+│   ├── models/
+│   │   └── job.py
+│   └── services/
+│       └── jobs.py
+├── migrations/
+│   └── versions/
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+├── alembic.ini
+└── pyproject.toml
 ```
 
-Strict layered architecture:
-
-- **Routes** — thin HTTP layer, no business logic
-- **Services** — owns all business logic, commits, and rollbacks
-- **Models** — SQLAlchemy ORM definitions
-- **DB layer** — engine + request-scoped session via dependency injection
-
-Sessions are request-scoped. The service layer owns transactions. Domain exceptions map to HTTP responses at the route boundary.
+Routes are thin. Services own all the logic, transactions, and rollbacks. Domain exceptions get caught at the route boundary and mapped to HTTP responses. Sessions are request-scoped.
 
 ---
 
-## Job Lifecycle
-
-Every job moves through a state machine:
+## Job lifecycle
 
 ```
 queued → running → succeeded
                  → failed
-                 → exhausted  (when max retries exceeded)
+                 → exhausted  (retries used up)
 ```
 
-Invalid transitions are rejected at the service layer. You cannot skip states or go backwards. The only way to move a job from queued to running is through `POST /jobs/claim` — not through the status update endpoint.
+Enforced at the service layer. The only path from `queued` to `running` is `POST /jobs/claim`.
 
 ---
 
-## Key Features
+## How the key parts work
 
-### Atomic Job Claiming — `POST /jobs/claim`
+### Atomic claiming — SELECT FOR UPDATE SKIP LOCKED
 
-The core concurrency challenge. When multiple workers call this simultaneously, only one can claim a job. Implemented via a conditional update:
+Multiple workers hitting `POST /jobs/claim` at the same time. Only one wins.
 
 ```sql
-UPDATE jobs SET status = 'running', locked_at = now(), locked_by = ?
-WHERE id = ? AND status = 'queued'
+SELECT * FROM jobs
+WHERE status = 'queued'
+ORDER BY priority DESC, created_at ASC
+LIMIT 1
+FOR UPDATE SKIP LOCKED
 ```
 
-If another worker claimed it first, the update affects 0 rows and fails safely. The claiming worker retries up to 3 times. No locks, no race conditions.
+Postgres locks the row the moment it's read. Other workers skip locked rows and grab the next available job. No race condition possible. Same primitive Celery and Sidekiq use under the hood.
 
-### Worker Identity — `locked_by`
+### Lease model
 
-Workers pass their identity when claiming a job. The system records who owns what. Without this, stuck job detection is impossible — you can't find a ghost worker if you don't know who the worker was.
+```
+claim     → lease_expires_at = now + 60s
+heartbeat → lease_expires_at = now + 60s
+reaper    → lease_expires_at < now → job recovered
+```
 
-### Priority Queue
+Workers heartbeat every 30 seconds. Go silent and the lease expires. The reaper finds it and puts it back in the queue.
 
-Jobs have a priority field. The claim endpoint always picks the highest priority queued job first. If two jobs share the same priority, the oldest one wins — first in, first out.
+### Background sweeper
 
-### Heartbeat — `POST /jobs/{id}/heartbeat`
+Runs every 30 seconds via FastAPI lifespan. No manual trigger needed — the system heals itself.
 
-While a job is running, the worker sends periodic heartbeats. Each one updates `last_heartbeat_at`. If heartbeats stop, the timestamp freezes. That frozen timestamp is how the system detects a dead worker.
+### Retry and exhaustion
 
-### Stuck Job Reaper — `POST /jobs/reap`
+Every recovery bumps `retry_count`. Hit `max_retries` (default 3) and the job moves to `exhausted`. Stops there, no infinite loops.
 
-The manager walks around and checks every running job. If `last_heartbeat_at` is older than 30 seconds — or null with an old `locked_at` — the job gets requeued. The worker's claim is wiped. Another worker picks it up. Kitchen never stays stuck.
+### Audit trail
 
-### Retry Mechanism
+Every state change is recorded permanently in `job_events`:
 
-Jobs remember how many times they've been requeued by the reaper. Each recovery increments `retry_count`. When `retry_count` reaches `max_retries` (default 3), the job moves to `exhausted` instead of being requeued. The system gives up gracefully.
+```
+GET /jobs/{id}/history
 
-### Metrics — `GET /jobs/metrics`
+2026-03-01 09:00 | None → queued      | actor: system
+2026-03-01 09:01 | queued → running   | actor: worker-b
+2026-03-01 09:05 | running → queued   | actor: reaper
+2026-03-01 09:06 | queued → running   | actor: worker-c
+2026-03-01 09:15 | running → succeeded | actor: worker-c
+```
 
-One endpoint gives a complete snapshot of the system:
+### Metrics
 
 ```json
 {
   "queued": 15,
-  "running": 0,
-  "succeeded": 6,
-  "failed": 0,
-  "exhausted": 2,
-  "total": 23,
-  "avg_processing_time_seconds": 71.85
+  "running": 4,
+  "succeeded": 87,
+  "failed": 2,
+  "exhausted": 1,
+  "total": 109,
+  "avg_processing_time_seconds": 0.58
 }
 ```
 
-High queued + zero running means workers are down. High exhausted means something is systematically failing. This is observability — knowing what your system is doing without digging through logs.
+High queued + zero running means workers are down. High exhausted means something is consistently failing.
+
+### Indexes
+
+```sql
+idx_jobs_claim        → (status, priority, created_at)   -- claiming
+idx_jobs_reaper       → (status, lease_expires_at)        -- reaper
+idx_job_events_job_id → (job_id, created_at)              -- history
+```
 
 ---
 
 ## Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/jobs` | Create a new job with name and priority |
-| `GET` | `/jobs` | List all jobs |
-| `GET` | `/jobs/metrics` | System health snapshot |
-| `GET` | `/jobs/{id}` | Get a job by ID |
-| `PATCH` | `/jobs/{id}/status` | Update job status (state machine enforced) |
-| `POST` | `/jobs/claim` | Atomically claim one queued job |
-| `POST` | `/jobs/reap` | Detect and recover stuck jobs |
-| `POST` | `/jobs/{id}/heartbeat` | Worker check-in while job is running |
+| Method | Endpoint | What it does |
+|--------|----------|--------------|
+| `POST` | `/jobs` | Create a job |
+| `GET` | `/jobs` | List jobs, filter + paginate |
+| `GET` | `/jobs/metrics` | Live system snapshot |
+| `GET` | `/jobs/{id}` | Single job |
+| `GET` | `/jobs/{id}/history` | Full audit trail |
+| `PATCH` | `/jobs/{id}/status` | State machine transition |
+| `POST` | `/jobs/claim` | Atomic claim |
+| `POST` | `/jobs/reap` | Recover stuck jobs |
+| `POST` | `/jobs/{id}/heartbeat` | Worker check-in |
 
 ---
 
-## Running Locally
+## Running locally
+
+**With Docker (recommended):**
 
 ```bash
+git clone https://github.com/Raktabhbhattacharjee/compute-orchestrator
+cd compute-orchestrator
+docker-compose up
+```
+
+Postgres starts, migrations run, app starts. Swagger at `http://localhost:8000/docs`.
+
+**Without Docker:**
+
+You'll need Postgres running locally first.
+
+```bash
+uv sync
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-Docs available at `http://localhost:8000/docs`
+Create a `.env` in the project root:
+
+```
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/compute_orchestrator
+```
+
+Don't commit `.env` — use `.env.example` as the template.
 
 ---
 
-## Test Scripts
-
-I wrote scripts to verify each feature instead of clicking through Swagger manually:
+## Tests
 
 ```bash
-uv run python test_priority.py   # proves priority queue ordering
-uv run python test_retry.py      # proves retry and exhaustion lifecycle
-uv run python test_metrics.py    # shows live kitchen dashboard
+uv run python tests/test_priority.py    # priority ordering
+uv run python tests/test_retry.py       # retry + exhaustion
+uv run python tests/test_metrics.py     # live metrics
+uv run python tests/test_audit.py       # audit trail
+uv run python tests/test_filtering.py   # filtering + pagination
 ```
 
 ---
 
-## What I Learned Building This
+## Roadmap
 
-- How state machines enforce correctness — invalid transitions rejected at service layer
-- Why conditional updates beat SELECT then UPDATE for concurrency safety
-- How heartbeats solve the silent worker death problem in distributed systems
-- What atomicity means in practice — all or nothing, never partial
-- Clean layered architecture — routes dumb, services smart, models pure
-- Request scoped sessions and why transaction ownership matters
-- How GROUP BY aggregations power observability endpoints
-- Priority scheduling and the starvation problem it creates
+This is a long term project. Each phase has a clear goal before moving to the next.
 
----
+```
+Done        → Railway deployment, live PostgreSQL, audit trail,
+              background sweeper, Docker, priority queue,
+              SELECT FOR UPDATE SKIP LOCKED
 
-## What's Being Built Next
+Next        → CLI tool (Typer)
+              manage the live system from terminal
 
-**Audit trail** — every status change recorded in a `job_events` table. Full timeline per job. "What happened to job 42?" gets a complete answer.
+Week 3      → break it in production
+              50 concurrent workers, see what fails
 
-**Background sweeper** — reaper runs automatically every 30 seconds via FastAPI lifespan. No manual trigger. System heals itself.
+Week 4      → async SQLAlchemy
+              fix bottlenecks with evidence, not guesses
 
-**PostgreSQL migration** — swap SQLite for a real concurrent database. `SELECT FOR UPDATE SKIP LOCKED` for production grade claiming.
+Week 5      → observability
+              structured logging, Prometheus + Grafana
 
-**Async SQLAlchemy** — non-blocking database sessions. Python async that maps directly to JS async concepts.
+Week 6      → priority aging, scheduled jobs, job dependencies
 
-**Docker + docker-compose** — one command runs the entire system including database.
+Week 7      → full test suite + CI/CD
 
-**CLI tool** — Typer based operator interface:
+Week 8+     → AWS migration, ML pipeline integration
+```
+
+### CLI (coming next)
+
+A real operator tool for managing a real production system:
+
 ```bash
 python cli.py metrics
 python cli.py jobs list --status running
-python cli.py jobs claim --worker chef-b
 python cli.py jobs history 42
+python cli.py reap
 ```
 
-**Test suite** — pytest, concurrency tests, reaper tests, retry exhaustion tests, load tests proving zero duplicate claims under concurrent workers.
+Built with Typer. Each command hits the live API and formats the output cleanly in terminal.
 
-**Deploy** — Railway or Render first, then AWS. CI/CD via GitHub Actions. Prometheus + Grafana monitoring.
-
-**Advanced features** — job dependencies (DAG concept), priority aging (solving starvation), worker registration, job scheduling.
-
----
-
-## Why This Project
-
-Most backend tutorials teach you how to write endpoints. This project teaches you how to think about systems — failure modes, recovery strategies, correctness under concurrency, observability, and operational discipline.
-
-The goal is to understand the concepts that power production job queues like Celery, Sidekiq, and AWS SQS — by building one from scratch.
+```
+cli.py
+  ├── metrics       → GET /jobs/metrics
+  ├── jobs
+  │   ├── list      → GET /jobs with filters
+  │   ├── history   → GET /jobs/{id}/history
+  │   └── requeue   → POST /jobs/{id}/requeue
+  └── reap          → POST /jobs/reap
+```
