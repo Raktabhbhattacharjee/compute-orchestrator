@@ -144,7 +144,7 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
     job.locked_by = worker_id
     job.locked_at = now
     job.updated_at = now
-    job.lease_expires_at=now+timedelta(seconds=30)
+    job.lease_expires_at = now + timedelta(seconds=30)
     record_event(
         db,
         job_id=job.id,
@@ -161,7 +161,8 @@ def claim_next_job(db: Session, *, worker_id: str) -> Job | None:
         db.rollback()
         raise
 
-# heartbeat job function 
+
+# heartbeat job function
 def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
     job = db.get(Job, job_id)
     if job is None:
@@ -181,7 +182,7 @@ def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
     now = datetime.now(timezone.utc)
     job.last_heartbeat_at = now
     job.updated_at = now
-    job.lease_expires_at=now+timedelta(seconds=60)
+    job.lease_expires_at = now + timedelta(seconds=60)
 
     try:
         db.commit()
@@ -191,10 +192,10 @@ def heartbeat_job(db: Session, *, job_id: int, worker_id: str) -> Job:
         db.rollback()
         raise
 
-# reap stuck jobs 
+
+# reap stuck jobs
 def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
     now = datetime.now(timezone.utc)
-    
 
     stuck_jobs = (
         db.execute(
@@ -215,7 +216,7 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         job.locked_by = None
         job.locked_at = None
         job.last_heartbeat_at = None
-        job.lease_expires_at=None
+        job.lease_expires_at = None
         job.updated_at = now
 
         if job.retry_count >= job.max_retries:
@@ -240,7 +241,7 @@ def reap_stuck_jobs(db: Session, *, threshold_seconds: int = 30) -> int:
         raise
 
 
-# GET METRICS FUNCTION 
+# GET METRICS FUNCTION
 def get_metrics(db: Session) -> dict:
     status_counts = db.execute(
         select(Job.status, func.count(Job.id).label("count")).group_by(Job.status)
@@ -257,14 +258,9 @@ def get_metrics(db: Session) -> dict:
         counts[row.status] = row.count
 
     avg_result = db.execute(
-        select(
-            func.avg(
-                func.extract("epoch", Job.updated_at)
-                - func.extract("epoch", Job.locked_at)
-            )
-        ).where(
+        select(func.avg(func.extract("epoch", Job.updated_at - Job.locked_at))).where(
             Job.status == "succeeded",
-            Job.locked_at != None,
+            Job.locked_at.isnot(None),
         )
     ).scalar()
 
