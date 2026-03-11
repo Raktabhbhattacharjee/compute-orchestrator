@@ -14,3 +14,9 @@ dependencies = [
     "typer>=0.24.1",
     "uvicorn>=0.41.0",
 ]
+
+[project.scripts]
+orc = "cli:app"
+
+[tool.setuptools]
+py-modules = ["cli"]
