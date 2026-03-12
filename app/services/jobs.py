@@ -103,7 +103,7 @@ def update_job_status(
 
     if job.status == "running" and to_status in {"succeeded", "failed"}:
         if job.locked_by is None:
-            raise InvalidTransition(
+             raise InvalidTransition(
                 "Job has no locked_by owner; cannot complete safely"
             )
         if job.locked_by != worker_id:

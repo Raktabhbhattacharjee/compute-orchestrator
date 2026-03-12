@@ -1,43 +1,41 @@
 # Compute Orchestrator
 
-A distributed job queue built from scratch with FastAPI and PostgreSQL. Live on Railway.
+A distributed job queue system built with FastAPI and PostgreSQL, deployed on Railway. Implements the core primitives found in production queue systems such as Celery, Sidekiq, and Amazon SQS — atomic job claiming, worker leases, heartbeat monitoring, automatic recovery, and a full audit trail.
 
-I built this to understand how production job queues actually work under the hood — the same ideas behind Celery, Sidekiq, and SQS. Not rushing to ship features. Going deep on every concept before moving on.
-
-**Live:** https://compute-orchestrator-production.up.railway.app/docs  
+**API Docs:** https://compute-orchestrator-production.up.railway.app/docs  
 **Health:** https://compute-orchestrator-production.up.railway.app/health
 
 ---
 
-## What it does
+## Overview
 
-Workers claim jobs, process them, send heartbeats while working, and report back when done. The system tracks all of it — who owns what, whether they're still alive, and what to do when they're not.
+Compute Orchestrator provides a reliable job execution pipeline where distributed workers can safely claim, process, and report on jobs without coordination conflicts. The system handles the hard guarantees required in production environments:
 
-The hard problems here:
-
-- two workers cannot claim the same job, ever
-- valid state transitions only — you can't skip states or go backwards
-- workers that go silent get detected and their jobs get recovered
-- retry logic with a ceiling — failed jobs retry, but stop eventually
-- every state change is recorded permanently
+- Exclusive job ownership — no two workers can claim the same job simultaneously
+- Strict state machine enforcement — invalid or out-of-order transitions are rejected
+- Automatic recovery of stalled jobs via lease expiry detection
+- Bounded retry logic — failed jobs are retried up to a configurable limit before being marked exhausted
+- Immutable audit trail — every state transition is recorded with actor and timestamp
 
 ---
 
-## Stack
+## Tech Stack
 
-| Tool | Why |
-|------|-----|
-| FastAPI | API layer |
-| SQLAlchemy 2.0 | ORM |
-| PostgreSQL | Row-level locking for real concurrency |
-| Alembic | Migrations |
-| Docker + docker-compose | Local dev |
-| Railway | Deployment + managed Postgres |
-| uv | Dependency management |
+| Tool | Purpose |
+|------|---------|
+| FastAPI | REST API layer |
+| SQLAlchemy 2.0 | ORM with async-compatible session management |
+| PostgreSQL | Primary datastore; row-level locking for concurrency guarantees |
+| Alembic | Schema migrations |
+| Docker + docker-compose | Local development environment |
+| Railway | Cloud deployment with managed PostgreSQL |
+| uv | Dependency and environment management |
+| Typer | CLI framework |
+| httpx | HTTP client for CLI–API communication |
 
 ---
 
-## Project structure
+## Project Structure
 
 ```
 compute-orchestrator/
@@ -56,33 +54,34 @@ compute-orchestrator/
 ├── migrations/
 │   └── versions/
 ├── tests/
+├── cli.py
 ├── Dockerfile
 ├── docker-compose.yml
 ├── alembic.ini
 └── pyproject.toml
 ```
 
-Routes are thin. Services own all the logic, transactions, and rollbacks. Domain exceptions get caught at the route boundary and mapped to HTTP responses. Sessions are request-scoped.
+Routes are intentionally thin — all business logic, transaction management, and rollback handling lives in the service layer. Domain exceptions are caught at the route boundary and mapped to appropriate HTTP responses. Database sessions are request-scoped.
 
 ---
 
-## Job lifecycle
+## Job Lifecycle
 
 ```
 queued → running → succeeded
                  → failed
-                 → exhausted  (retries used up)
+                 → exhausted  (retry limit reached)
 ```
 
-Enforced at the service layer. The only path from `queued` to `running` is `POST /jobs/claim`.
+State transitions are enforced at the service layer. The only valid path from `queued` to `running` is through `POST /jobs/claim`. Direct status manipulation is validated against the allowed transition graph.
 
 ---
 
-## How the key parts work
+## Core Mechanisms
 
-### Atomic claiming — SELECT FOR UPDATE SKIP LOCKED
+### Atomic Claiming — `SELECT FOR UPDATE SKIP LOCKED`
 
-Multiple workers hitting `POST /jobs/claim` at the same time. Only one wins.
+When multiple workers call `POST /jobs/claim` concurrently, PostgreSQL row-level locking guarantees exactly one worker acquires each job.
 
 ```sql
 SELECT * FROM jobs
@@ -92,37 +91,39 @@ LIMIT 1
 FOR UPDATE SKIP LOCKED
 ```
 
-Postgres locks the row the moment it's read. Other workers skip locked rows and grab the next available job. No race condition possible. Same primitive Celery and Sidekiq use under the hood.
+The row is locked at read time. Competing workers skip locked rows and move to the next available job — no application-level coordination required, no race conditions possible.
 
-### Lease model
+### Worker Lease Model
+
+Each claimed job carries a lease expiry timestamp, continuously renewed by the worker via heartbeats.
 
 ```
 claim     → lease_expires_at = now + 60s
 heartbeat → lease_expires_at = now + 60s
-reaper    → lease_expires_at < now → job recovered
+reaper    → lease_expires_at < now → job returned to queue
 ```
 
-Workers heartbeat every 30 seconds. Go silent and the lease expires. The reaper finds it and puts it back in the queue.
+Workers are expected to heartbeat every 30 seconds. If a worker stops responding, the lease expires and the job is automatically recovered.
 
-### Background sweeper
+### Background Sweeper
 
-Runs every 30 seconds via FastAPI lifespan. No manual trigger needed — the system heals itself.
+A background task runs every 30 seconds via FastAPI's lifespan context. It identifies jobs whose leases have expired and returns them to the queue — no manual intervention required.
 
-### Retry and exhaustion
+### Retry and Exhaustion
 
-Every recovery bumps `retry_count`. Hit `max_retries` (default 3) and the job moves to `exhausted`. Stops there, no infinite loops.
+Each recovery increments the job's `retry_count`. Once `max_retries` is reached (default: 3), the job transitions to `exhausted` and is no longer requeued. This prevents infinite retry loops on persistently failing jobs.
 
-### Audit trail
+### Audit Trail
 
-Every state change is recorded permanently in `job_events`:
+Every state transition is written to `job_events` with the originating actor and timestamp. This provides a complete, immutable history of each job's execution.
 
 ```
 GET /jobs/{id}/history
 
-2026-03-01 09:00 | None → queued      | actor: system
-2026-03-01 09:01 | queued → running   | actor: worker-b
-2026-03-01 09:05 | running → queued   | actor: reaper
-2026-03-01 09:06 | queued → running   | actor: worker-c
+2026-03-01 09:00 | None    → queued    | actor: system
+2026-03-01 09:01 | queued  → running   | actor: worker-b
+2026-03-01 09:05 | running → queued    | actor: reaper
+2026-03-01 09:06 | queued  → running   | actor: worker-c
 2026-03-01 09:15 | running → succeeded | actor: worker-c
 ```
 
@@ -140,35 +141,131 @@ GET /jobs/{id}/history
 }
 ```
 
-High queued + zero running means workers are down. High exhausted means something is consistently failing.
+Elevated `queued` with zero `running` indicates no active workers. Elevated `exhausted` indicates a systemic failure in job processing logic.
 
-### Indexes
+### Query Indexes
 
 ```sql
-idx_jobs_claim        → (status, priority, created_at)   -- claiming
-idx_jobs_reaper       → (status, lease_expires_at)        -- reaper
-idx_job_events_job_id → (job_id, created_at)              -- history
+idx_jobs_claim        → (status, priority, created_at)   -- optimises claim queries
+idx_jobs_reaper       → (status, lease_expires_at)        -- optimises reaper scans
+idx_job_events_job_id → (job_id, created_at)              -- optimises history lookups
 ```
 
 ---
 
-## Endpoints
+## API Reference
 
-| Method | Endpoint | What it does |
-|--------|----------|--------------|
-| `POST` | `/jobs` | Create a job |
-| `GET` | `/jobs` | List jobs, filter + paginate |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/jobs` | Create a new job |
+| `GET` | `/jobs` | List jobs with filtering and pagination |
 | `GET` | `/jobs/metrics` | Live system snapshot |
-| `GET` | `/jobs/{id}` | Single job |
-| `GET` | `/jobs/{id}/history` | Full audit trail |
-| `PATCH` | `/jobs/{id}/status` | State machine transition |
-| `POST` | `/jobs/claim` | Atomic claim |
-| `POST` | `/jobs/reap` | Recover stuck jobs |
-| `POST` | `/jobs/{id}/heartbeat` | Worker check-in |
+| `GET` | `/jobs/{id}` | Retrieve a single job |
+| `GET` | `/jobs/{id}/history` | Full audit trail for a job |
+| `PATCH` | `/jobs/{id}/status` | Trigger a state machine transition |
+| `POST` | `/jobs/claim` | Atomically claim the next available job |
+| `POST` | `/jobs/reap` | Recover all expired-lease jobs |
+| `POST` | `/jobs/{id}/heartbeat` | Renew a worker's job lease |
+
+Worker identity is passed via request header:
+```
+X-Worker-Id: worker-name
+```
 
 ---
 
-## Running locally
+## CLI
+
+Compute Orchestrator ships with `orc`, a terminal management tool for interacting with the live system. Built with Typer and installed as a global command.
+
+```bash
+# Install
+uv pip install -e .
+
+# Usage
+orc <command> --env [local|prod]
+```
+
+`--env prod` targets the live Railway deployment. `--env local` targets `localhost:8000`. Defaults to local if the flag is omitted.
+
+### `orc metrics`
+
+Displays a live snapshot of system health — job counts by status and average processing time.
+
+```bash
+orc metrics --env prod
+```
+
+```
+Metrics  [PROD]
+────────────────────────────────────────
+Queued              1
+Running             0
+Succeeded           0
+Failed              0
+Exhausted           0
+────────────────────────────────────────
+Total               1
+Avg Time            0.00s
+```
+
+### `orc jobs list`
+
+Lists all jobs with optional status filtering and pagination support.
+
+```bash
+orc jobs list --env prod
+orc jobs list --env prod --status running
+orc jobs list --env prod --status queued --page 2
+```
+
+```
+Jobs  [PROD]
+────────────────────────────────────────
+ID     STATUS    PRIORITY   RETRIES    NAME
+#1     QUEUED    p5         0/3        test-job
+page 1  —  1 jobs shown
+```
+
+### `orc jobs history <id>`
+
+Displays the complete audit trail for a specific job — every state transition, the responsible actor, and the timestamp.
+
+```bash
+orc jobs history 1 --env prod
+```
+
+```
+Job #1  [PROD]
+────────────────────────────────────────
+Name                test-job
+Status              QUEUED
+Priority            p5
+Retries             0 / 3
+Created             2026-03-10 07:09:46
+
+Timeline
+────────────────────────────────────────
+2026-03-10 07:09:46  none → QUEUED  ← system
+```
+
+### `orc reap`
+
+Manually triggers the reaper — identifies all jobs with expired leases and returns them to the queue.
+
+```bash
+orc reap --env prod
+```
+
+```
+Reaper  [PROD]
+────────────────────────────────────────
+Result              No stuck jobs found
+```
+
+---
+
+## Running Locally
 
 **With Docker (recommended):**
 
@@ -178,11 +275,11 @@ cd compute-orchestrator
 docker-compose up
 ```
 
-Postgres starts, migrations run, app starts. Swagger at `http://localhost:8000/docs`.
+PostgreSQL starts, migrations run, and the application starts automatically. Swagger UI is available at `http://localhost:8000/docs`.
 
 **Without Docker:**
 
-You'll need Postgres running locally first.
+Requires a running PostgreSQL instance.
 
 ```bash
 uv sync
@@ -190,13 +287,13 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-Create a `.env` in the project root:
+Create a `.env` file in the project root:
 
 ```
 DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/compute_orchestrator
 ```
 
-Don't commit `.env` — use `.env.example` as the template.
+Do not commit `.env` — use `.env.example` as the reference template.
 
 ---
 
@@ -204,61 +301,36 @@ Don't commit `.env` — use `.env.example` as the template.
 
 ```bash
 uv run python tests/test_priority.py    # priority ordering
-uv run python tests/test_retry.py       # retry + exhaustion
-uv run python tests/test_metrics.py     # live metrics
-uv run python tests/test_audit.py       # audit trail
-uv run python tests/test_filtering.py   # filtering + pagination
+uv run python tests/test_retry.py       # retry and exhaustion logic
+uv run python tests/test_metrics.py     # metrics endpoint
+uv run python tests/test_audit.py       # audit trail integrity
+uv run python tests/test_filtering.py   # filtering and pagination
 ```
 
 ---
 
 ## Roadmap
 
-This is a long term project. Each phase has a clear goal before moving to the next.
-
 ```
-Done        → Railway deployment, live PostgreSQL, audit trail,
+Completed   → Railway deployment, managed PostgreSQL, audit trail,
               background sweeper, Docker, priority queue,
-              SELECT FOR UPDATE SKIP LOCKED
+              SELECT FOR UPDATE SKIP LOCKED, CLI (orc)
 
-Next        → CLI tool (Typer)
-              manage the live system from terminal
+Next        → Concurrency stress tests
+              50 concurrent workers, measure claim correctness under load
 
-Week 3      → break it in production
-              50 concurrent workers, see what fails
+Phase 3     → Hardening based on stress test findings
 
-Week 4      → async SQLAlchemy
-              fix bottlenecks with evidence, not guesses
+Phase 4     → Observability
+              Structured logging, Prometheus metrics, Grafana dashboards
 
-Week 5      → observability
-              structured logging, Prometheus + Grafana
+Phase 5     → Async SQLAlchemy
+              Bottleneck-driven — benchmarks first, then optimise
 
-Week 6      → priority aging, scheduled jobs, job dependencies
+Phase 6     → Scheduler intelligence
+              Priority aging, scheduled jobs, DAG-based dependencies
 
-Week 7      → full test suite + CI/CD
+Phase 7     → Full pytest suite and CI/CD pipeline
 
-Week 8+     → AWS migration, ML pipeline integration
-```
-
-### CLI (coming next)
-
-A real operator tool for managing a real production system:
-
-```bash
-python cli.py metrics
-python cli.py jobs list --status running
-python cli.py jobs history 42
-python cli.py reap
-```
-
-Built with Typer. Each command hits the live API and formats the output cleanly in terminal.
-
-```
-cli.py
-  ├── metrics       → GET /jobs/metrics
-  ├── jobs
-  │   ├── list      → GET /jobs with filters
-  │   ├── history   → GET /jobs/{id}/history
-  │   └── requeue   → POST /jobs/{id}/requeue
-  └── reap          → POST /jobs/reap
+Phase 8+    → AWS migration, ML pipeline integration
 ```
